@@ -71,6 +71,14 @@
         }
         .balance { font-family: 'Consolas', monospace; color: #56d364; font-weight: 600; }
         .small { font-size: 12px; color: #8b949e; }
+        .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 12px 0; }
+        .filters button { margin: 0; }
+        @media (max-width: 720px) {
+            body { padding: 12px; }
+            .grid-2 { grid-template-columns: 1fr; }
+            table { font-size: 12px; }
+            th, td { padding: 6px 4px; }
+        }
     </style>
 </head>
 <body>
@@ -138,13 +146,29 @@
 
     <div class="card" style="margin-top: 16px">
         <h2>📜 Transaction Ledger</h2>
+        <div class="filters">
+            <select id="txStatus" aria-label="Filter by status">
+                <option value="">All statuses</option>
+                <option value="SETTLED">Settled</option>
+                <option value="REJECTED">Rejected</option>
+            </select>
+            <input id="txSender" type="search" placeholder="Sender VPA">
+            <input id="txReceiver" type="search" placeholder="Receiver VPA">
+            <button onclick="searchTransactions()">Apply filters</button>
+            <button class="secondary" onclick="clearTransactionFilters()">Clear</button>
+        </div>
         <table id="tx-table">
             <thead><tr>
                 <th>ID</th><th>From</th><th>To</th><th>Amount</th>
-                <th>Status</th><th>Bridge</th><th>Hops</th><th>Settled</th>
+                <th>Status</th><th>Reason</th><th>Bridge</th><th>Hops</th><th>Settled</th>
             </tr></thead>
             <tbody></tbody>
         </table>
+        <div class="filters">
+            <button id="previousPage" class="secondary" onclick="changeLedgerPage(-1)">Previous</button>
+            <span class="small" id="ledgerPageInfo" aria-live="polite"></span>
+            <button id="nextPage" class="secondary" onclick="changeLedgerPage(1)">Next</button>
+        </div>
     </div>
 
     <div class="card" style="margin-top: 16px">
@@ -157,6 +181,65 @@
 function log(msg) {
     const el = document.getElementById('log');
     el.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg + '\n' + el.textContent;
+}
+
+let ledgerPage = 0;
+let ledgerTotalPages = 0;
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[char]));
+}
+
+function transactionSearchUrl() {
+    const params = new URLSearchParams({page: ledgerPage, size: 10});
+    const status = document.getElementById('txStatus').value;
+    const sender = document.getElementById('txSender').value.trim();
+    const receiver = document.getElementById('txReceiver').value.trim();
+    if (status) params.set('status', status);
+    if (sender) params.set('sender', sender);
+    if (receiver) params.set('receiver', receiver);
+    return '/api/transactions/search?' + params.toString();
+}
+
+async function loadTransactions() {
+    const result = await fetch(transactionSearchUrl()).then(response => response.json());
+    const items = result.items || [];
+    ledgerTotalPages = result.totalPages || 0;
+    document.querySelector('#tx-table tbody').innerHTML = items.map(t => `
+        <tr>
+            <td>${t.id}</td><td>${escapeHtml(t.senderVpa)}</td><td>${escapeHtml(t.receiverVpa)}</td>
+            <td class="balance">₹${parseFloat(t.amount).toFixed(2)}</td>
+            <td class="status-${escapeHtml(t.status)}">${escapeHtml(t.status)}</td>
+            <td>${escapeHtml(t.rejectionReason || '—')}</td>
+            <td>${escapeHtml(t.bridgeNodeId)}</td><td>${t.hopCount}</td>
+            <td class="small">${new Date(t.settledAt).toLocaleTimeString()}</td>
+        </tr>
+    `).join('');
+    const pageLabel = ledgerTotalPages === 0 ? 'No transactions' :
+        `Page ${result.page + 1} of ${ledgerTotalPages} · ${result.totalElements} transaction(s)`;
+    document.getElementById('ledgerPageInfo').textContent = pageLabel;
+    document.getElementById('previousPage').disabled = ledgerPage <= 0;
+    document.getElementById('nextPage').disabled =
+        ledgerTotalPages === 0 || ledgerPage >= ledgerTotalPages - 1;
+}
+
+function searchTransactions() {
+    ledgerPage = 0;
+    loadTransactions();
+}
+
+function clearTransactionFilters() {
+    document.getElementById('txStatus').value = '';
+    document.getElementById('txSender').value = '';
+    document.getElementById('txReceiver').value = '';
+    searchTransactions();
+}
+
+function changeLedgerPage(direction) {
+    ledgerPage = Math.max(0, Math.min(ledgerPage + direction, Math.max(ledgerTotalPages - 1, 0)));
+    loadTransactions();
 }
 
 async function refresh() {
@@ -183,17 +266,7 @@ async function refresh() {
             <td class="balance">₹${parseFloat(a.balance).toFixed(2)}</td></tr>
     `).join('');
 
-    // Transactions
-    const txs = await fetch('/api/transactions').then(r => r.json());
-    document.querySelector('#tx-table tbody').innerHTML = txs.map(t => `
-        <tr>
-            <td>${t.id}</td><td>${t.senderVpa}</td><td>${t.receiverVpa}</td>
-            <td class="balance">₹${parseFloat(t.amount).toFixed(2)}</td>
-            <td class="status-${t.status}">${t.status}</td>
-            <td>${t.bridgeNodeId}</td><td>${t.hopCount}</td>
-            <td class="small">${new Date(t.settledAt).toLocaleTimeString()}</td>
-        </tr>
-    `).join('');
+    await loadTransactions();
 }
 
 async function sendPacket() {
@@ -205,10 +278,15 @@ async function sendPacket() {
         ttl: 5,
         startDevice: 'phone-alice'
     };
-    const r = await fetch('/api/demo/send', {
+    const response = await fetch('/api/demo/send', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body)
-    }).then(r => r.json());
+    });
+    const r = await response.json();
+    if (!response.ok) {
+        log(`⚠️ Payment request rejected: ${JSON.stringify(r)}`);
+        return;
+    }
     log(`📤 Packet ${r.packetId.substring(0,8)} encrypted & injected at ${r.injectedAt} (TTL ${r.ttl})`);
     log(`   ciphertext (truncated): ${r.ciphertextPreview}`);
     refresh();

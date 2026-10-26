@@ -57,6 +57,15 @@ public class BridgeIngestionService {
                 return IngestResult.invalid(packetHash, "decryption_failed");
             }
 
+            if (instruction == null
+                    || instruction.getSenderVpa() == null || instruction.getSenderVpa().isBlank()
+                    || instruction.getReceiverVpa() == null || instruction.getReceiverVpa().isBlank()
+                    || instruction.getAmount() == null
+                    || instruction.getNonce() == null || instruction.getNonce().isBlank()
+                    || instruction.getSignedAt() == null) {
+                return IngestResult.invalid(packetHash, "malformed_instruction");
+            }
+
             // ---- Freshness check (replay protection) ----
             long ageSeconds = (Instant.now().toEpochMilli() - instruction.getSignedAt()) / 1000;
             if (ageSeconds > maxAgeSeconds) {
@@ -70,6 +79,9 @@ public class BridgeIngestionService {
 
             // ---- Settle ----
             Transaction tx = settlement.settle(instruction, packetHash, bridgeNodeId, hopCount);
+            if (tx.getStatus() == Transaction.Status.REJECTED) {
+                return IngestResult.rejected(packetHash, tx);
+            }
             return IngestResult.settled(packetHash, tx);
 
         } catch (Exception e) {
@@ -81,6 +93,9 @@ public class BridgeIngestionService {
     public record IngestResult(String outcome, String packetHash, String reason, Long transactionId) {
         public static IngestResult settled(String hash, Transaction tx) {
             return new IngestResult("SETTLED", hash, null, tx.getId());
+        }
+        public static IngestResult rejected(String hash, Transaction tx) {
+            return new IngestResult("REJECTED", hash, tx.getRejectionReason(), tx.getId());
         }
         public static IngestResult duplicate(String hash) {
             return new IngestResult("DUPLICATE_DROPPED", hash, null, null);

@@ -3,6 +3,16 @@ package com.demo.upimesh.controller;
 import com.demo.upimesh.crypto.ServerKeyHolder;
 import com.demo.upimesh.model.*;
 import com.demo.upimesh.service.*;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -49,7 +59,7 @@ public class ApiController {
      * and inject it into the mesh at the given device.
      */
     @PostMapping("/demo/send")
-    public ResponseEntity<?> demoSend(@RequestBody DemoSendRequest req) throws Exception {
+    public ResponseEntity<?> demoSend(@Valid @RequestBody DemoSendRequest req) throws Exception {
         MeshPacket packet = demo.createPacket(
                 req.senderVpa, req.receiverVpa, req.amount, req.pin,
                 req.ttl == null ? 5 : req.ttl);
@@ -66,10 +76,19 @@ public class ApiController {
     }
 
     public static class DemoSendRequest {
+        @NotBlank
         public String senderVpa;
+        @NotBlank
         public String receiverVpa;
+        @NotNull
+        @DecimalMin("0.01")
+        @Digits(integer = 12, fraction = 2)
         public BigDecimal amount;
+        @NotBlank
+        @Pattern(regexp = "\\d{4,6}")
         public String pin;
+        @Min(1)
+        @Max(10)
         public Integer ttl;
         public String startDevice;
     }
@@ -172,5 +191,35 @@ public class ApiController {
     @GetMapping("/transactions")
     public List<Transaction> listTransactions() {
         return txRepo.findTop20ByOrderByIdDesc();
+    }
+
+    @GetMapping("/transactions/search")
+    public ResponseEntity<?> searchTransactions(
+            @RequestParam(required = false) Transaction.Status status,
+            @RequestParam(required = false) String sender,
+            @RequestParam(required = false) String receiver,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        if (page < 0 || size < 1 || size > 100) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "page must be non-negative and size must be between 1 and 100"));
+        }
+
+        Page<Transaction> results = txRepo.search(
+                status,
+                blankToNull(sender),
+                blankToNull(receiver),
+                PageRequest.of(page, size));
+        return ResponseEntity.ok(Map.of(
+                "items", results.getContent(),
+                "page", results.getNumber(),
+                "size", results.getSize(),
+                "totalElements", results.getTotalElements(),
+                "totalPages", results.getTotalPages()
+        ));
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 }

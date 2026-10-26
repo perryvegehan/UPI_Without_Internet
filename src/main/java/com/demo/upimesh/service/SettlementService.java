@@ -8,6 +8,7 @@ import com.demo.upimesh.model.TransactionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,9 +33,26 @@ public class SettlementService {
     @Autowired private AccountRepository accounts;
     @Autowired private TransactionRepository transactions;
 
+    @Value("${upi.payment.max-amount:10000.00}")
+    private BigDecimal maxPaymentAmount;
+
     @Transactional
     public Transaction settle(PaymentInstruction instruction, String packetHash,
                               String bridgeNodeId, int hopCount) {
+
+        BigDecimal amount = instruction.getAmount();
+        if (amount == null || amount.signum() <= 0) {
+            return recordRejected(instruction, packetHash, bridgeNodeId, hopCount, "invalid_amount");
+        }
+        if (amount.scale() > 2) {
+            return recordRejected(instruction, packetHash, bridgeNodeId, hopCount, "invalid_precision");
+        }
+        if (amount.compareTo(maxPaymentAmount) > 0) {
+            return recordRejected(instruction, packetHash, bridgeNodeId, hopCount, "limit_exceeded");
+        }
+        if (instruction.getSenderVpa().equalsIgnoreCase(instruction.getReceiverVpa())) {
+            return recordRejected(instruction, packetHash, bridgeNodeId, hopCount, "self_transfer_not_allowed");
+        }
 
         Account sender = accounts.findById(instruction.getSenderVpa())
                 .orElseThrow(() -> new IllegalArgumentException(
@@ -44,15 +62,10 @@ public class SettlementService {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Unknown receiver VPA: " + instruction.getReceiverVpa()));
 
-        BigDecimal amount = instruction.getAmount();
-        if (amount.signum() <= 0) {
-            throw new IllegalArgumentException("Amount must be positive");
-        }
-
         if (sender.getBalance().compareTo(amount) < 0) {
             log.warn("Insufficient balance: {} has ₹{}, tried to send ₹{}",
                     sender.getVpa(), sender.getBalance(), amount);
-            return recordRejected(instruction, packetHash, bridgeNodeId, hopCount);
+            return recordRejected(instruction, packetHash, bridgeNodeId, hopCount, "insufficient_balance");
         }
 
         sender.setBalance(sender.getBalance().subtract(amount));
@@ -80,7 +93,7 @@ public class SettlementService {
     }
 
     private Transaction recordRejected(PaymentInstruction instruction, String packetHash,
-                                       String bridgeNodeId, int hopCount) {
+                                       String bridgeNodeId, int hopCount, String reason) {
         Transaction tx = new Transaction();
         tx.setPacketHash(packetHash);
         tx.setSenderVpa(instruction.getSenderVpa());
@@ -91,6 +104,7 @@ public class SettlementService {
         tx.setBridgeNodeId(bridgeNodeId);
         tx.setHopCount(hopCount);
         tx.setStatus(Transaction.Status.REJECTED);
+        tx.setRejectionReason(reason);
         return transactions.save(tx);
     }
 }

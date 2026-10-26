@@ -298,6 +298,7 @@ src/test/java/com/demo/upimesh/
 | GET | `/api/server-key` | Server's RSA public key (base64) |
 | GET | `/api/accounts` | All accounts and balances |
 | GET | `/api/transactions` | Last 20 transactions |
+| GET | `/api/transactions/search` | Filtered, paginated transaction ledger (`status`, `sender`, `receiver`, `page`, `size`) |
 | GET | `/api/mesh/state` | Current state of every virtual device |
 | POST | `/api/demo/send` | Simulate sender phone — encrypt + inject packet |
 | POST | `/api/mesh/gossip` | Run one round of gossip across the mesh |
@@ -327,12 +328,18 @@ X-Hop-Count: 3
 Response:
 ```json
 {
-  "outcome": "SETTLED",                     // or "DUPLICATE_DROPPED" or "INVALID"
+  "outcome": "SETTLED",                     // or REJECTED, DUPLICATE_DROPPED, INVALID
   "packetHash": "a3f8c9...",
-  "reason": null,                            // populated on INVALID
-  "transactionId": 42                        // populated on SETTLED
+  "reason": null,                            // populated on rejection or INVALID
+  "transactionId": 42                        // populated for SETTLED or REJECTED ledger entries
 }
 ```
+
+The demo records a `REJECTED` ledger entry for self-transfers, amounts above
+`upi.payment.max-amount` (default ₹10,000), invalid amount precision, and
+insufficient balances. Rejection reasons are visible in the dashboard and in
+the ledger response. `POST /api/demo/send` also validates required fields,
+amount precision, PIN format, and TTL before creating a packet.
 
 ---
 
@@ -343,11 +350,13 @@ Run all tests:
 mvnw.cmd test
 ```
 
-The three included tests:
+The included tests:
 
 - **`encryptDecryptRoundTrip`** — sanity-check that hybrid encryption is symmetric.
 - **`tamperedCiphertextIsRejected`** — flip a byte in the ciphertext, verify that `BridgeIngestionService` returns `INVALID` instead of crashing or settling.
 - **`singlePacketDeliveredByThreeBridgesSettlesExactlyOnce`** — the headline test. Three threads, one packet, simultaneous delivery. Asserts exactly one `SETTLED`, two `DUPLICATE_DROPPED`, and that the sender's balance changed by exactly the amount once.
+- **`paymentGuardrailsRejectSelfTransfersAndAmountsAboveConfiguredLimit`** — verifies rejected payments are audited and do not change balances.
+- **`transactionSearchAppliesFiltersAndPageSize`** — verifies filtered, paginated ledger queries.
 
 ---
 
